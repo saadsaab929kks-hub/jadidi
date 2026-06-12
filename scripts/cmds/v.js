@@ -1,177 +1,177 @@
 module.exports = {
   config: {
     name: "v",
-    version: "3.0.0",
-    author: "Amine (Alen) & Custom Build",
+    version: "4.0.0",
+    author: "Amine (Alen) & Maestro",
     countDown: 2,
     role: 2,
-    shortDescription: { en: "قفل الكنيات بسرعة وقوة رهيبة" },
+    shortDescription: { en: "قفل الكنيات بقوة رهيبة (3 رادارات)" },
     category: "حماية",
-    guide: { en: ".v vv on [كنية] | .v vv off | .v cc on | .v cc off | .v t [كنيتك]" }
+    guide: {
+      en: ".v → مسح\n" +
+          ".v [كنية] → قفل الكل على هذي الكنية\n" +
+          ".v [ID] [كنية] → قفل شخص معين\n" +
+          ".v انا [كنية] → تغيير كنيتك\n" +
+          ".v [ثواني] [كنية] → قفل مع تأخير\n" +
+          ".v توقف → إيقاف كل شيء"
+    }
   },
 
-  // خاصية تشغيل المهام بالتوازي مع حد أقصى لتفادي الحظر
-  async runConcurrent(tasks, limit = 8, delayMs = 200) {
-    const results = [];
-    const executing = [];
-    for (const task of tasks) {
-      const p = task().then(r => {
-        executing.splice(executing.indexOf(p), 1);
-        return r;
-      });
-      results.push(p);
-      executing.push(p);
-      if (executing.length >= limit) await Promise.race(executing);
-      if (results.length % limit === 0) await new Promise(r => setTimeout(r, delayMs));
+  _intervals: {}, // لتخزين الرادارات
+
+  // تشغيل 3 رادارات قوية (كل 2 ثواني)
+  startRadar(api, threadID) {
+    if (this._intervals[threadID]) return;
+
+    this._intervals[threadID] = [];
+
+    for (let i = 1; i <= 3; i++) {  // 3 رادارات
+      const interval = setInterval(async () => {
+        try {
+          const info = await api.getThreadInfo(threadID);
+          const vvLock = global.GoatBot.vv_lock?.[threadID];
+          const targetLocks = global.GoatBot.targetLocks?.[threadID] || {};
+
+          if (!vvLock && Object.keys(targetLocks).length === 0) {
+            this.stopRadar(threadID);
+            return;
+          }
+
+          const botID = api.getCurrentUserID();
+          const promises = info.participantIDs
+            .filter(id => id !== botID && !global.config.adminBot?.includes(id))
+            .map(async (id) => {
+              try {
+                // قفل عام
+                if (vvLock) {
+                  await api.changeNickname(vvLock, threadID, id);
+                }
+                // قفل شخص معين
+                if (targetLocks[id]) {
+                  await api.changeNickname(targetLocks[id], threadID, id);
+                }
+              } catch (e) {}
+            });
+
+          // تنفيذ محدود لتجنب الحظر
+          await Promise.allSettled(promises.slice(0, 8));
+        } catch (e) {}
+      }, 2000); // كل 2 ثواني
+
+      this._intervals[threadID].push(interval);
     }
-    return Promise.all(results);
+  },
+
+  stopRadar(threadID) {
+    if (this._intervals[threadID]) {
+      this._intervals[threadID].forEach(clearInterval);
+      delete this._intervals[threadID];
+    }
   },
 
   onStart: async function ({ api, event, args, message }) {
     const { threadID, senderID } = event;
-    const action = args[0];
-    const subAction = args[1];
+    const input = args.join(" ").trim();
 
-    // تغيير كنية المطور (/v t)
-    if (action === "t") {
+    global.GoatBot.vv_lock = global.GoatBot.vv_lock || {};
+    global.GoatBot.targetLocks = global.GoatBot.targetLocks || {};
+
+    // 1. مسح الكنية ( .v )
+    if (!args[0] || args[0].toLowerCase() === "مسح") {
+      await api.changeNickname("", threadID, senderID);
+      return message.reply("🗑️ تم مسح كنيتك.");
+    }
+
+    // 2. إيقاف كل شيء
+    if (args[0].toLowerCase() === "توقف" || args[0].toLowerCase() === "stop") {
+      delete global.GoatBot.vv_lock[threadID];
+      delete global.GoatBot.targetLocks[threadID];
+      this.stopRadar(threadID);
+      return message.reply("✅ تم إيقاف جميع أنظمة القفل والرادار.");
+    }
+
+    // 3. تغيير كنية المستخدم نفسه (.v انا ...)
+    if (args[0].toLowerCase() === "انا") {
       const nick = args.slice(1).join(" ");
       if (!nick) return message.reply("💍 اكتب الكنية الجديدة.");
       await api.changeNickname(nick, threadID, senderID);
-      return message.reply("💍 تم تحديث كنيتك يا غالي.");
+      return message.reply(`💍 تم تغيير كنيتك إلى: ${nick}`);
     }
 
-    // ================== توحيد الكنيات ==================
-    if (action === "vv") {
-      if (subAction === "on") {
-        const nick = args.slice(2).join(" ");
-        if (!nick) return message.reply("💍 اكتب الكنية اللي تبي تفرضها على الكل.");
+    // 4. قفل شخص معين بالـ ID
+    if (/^\d+$/.test(args[0])) {
+      const targetID = args[0];
+      const nick = args.slice(1).join(" ");
+      if (!nick) return message.reply("💍 اكتب الكنية المراد فرضها.");
 
-        // حفظ القفل
-        global.GoatBot.vv_lock = global.GoatBot.vv_lock || {};
-        global.GoatBot.vv_lock[threadID] = nick;
-        // إطفاء قفل المسح إن شغال
-        if (global.GoatBot.cc_lock?.[threadID]) delete global.GoatBot.cc_lock[threadID];
+      global.GoatBot.targetLocks[threadID] = global.GoatBot.targetLocks[threadID] || {};
+      global.GoatBot.targetLocks[threadID][targetID] = nick;
 
-        const info = await api.getThreadInfo(threadID);
-        if (!info.participantIDs) return message.reply("❌ فشل تحميل الأعضاء.");
+      await api.changeNickname(nick, threadID, targetID).catch(() => {});
+      this.startRadar(api, threadID);
 
-        message.reply("⏳ يتم توحيد الكنيات بسرعة الصاروخ...");
-
-        const tasks = info.participantIDs.map(id => () =>
-          api.changeNickname(nick, threadID, id).catch(() => {})
-        );
-
-        await this.runConcurrent(tasks, 8, 250);
-        // تشغيل الفحص الاحتياطي الدوري
-        this._startNickInterval(api, threadID);
-        return message.reply(`✅ تم فرض الكنية: ${nick}\n🔒 القفل نشط، أي تغيير يرجع فوراً.`);
-      }
-
-      if (subAction === "off") {
-        if (global.GoatBot.vv_lock?.[threadID]) {
-          delete global.GoatBot.vv_lock[threadID];
-          this._stopNickInterval(threadID);
-        }
-        return message.reply("✅ تم إيقاف توحيد الكنيات.");
-      }
+      return message.reply(`🔒 تم قفل الشخص [\( {targetID}] بالكنية:\n \){nick}\n(3 رادارات نشطة)`);
     }
 
-    // ================== مسح جميع الكنيات ==================
-    if (action === "cc") {
-      if (subAction === "on") {
-        global.GoatBot.cc_lock = global.GoatBot.cc_lock || {};
-        global.GoatBot.cc_lock[threadID] = true;
-        if (global.GoatBot.vv_lock?.[threadID]) delete global.GoatBot.vv_lock[threadID];
+    // 5. قفل الكل + دعم التأخير (ثواني)
+    let nick = input;
+    let delay = 0;
 
-        const info = await api.getThreadInfo(threadID);
-        if (!info.participantIDs) return message.reply("❌ فشل تحميل الأعضاء.");
+    // التحقق إذا أول كلمة رقم (ثواني)
+    if (!isNaN(args[0]) && args.length > 1) {
+      delay = parseInt(args[0]) * 1000;
+      nick = args.slice(1).join(" ");
+    }
 
-        message.reply("⏳ جاري مسح جميع الكنيات...");
+    if (!nick) return message.reply("💍 اكتب الكنية.");
 
-        const tasks = info.participantIDs.map(id => () =>
-          api.changeNickname("", threadID, id).catch(() => {})
-        );
+    global.GoatBot.vv_lock[threadID] = nick;
 
-        await this.runConcurrent(tasks, 8, 250);
-        this._startNickInterval(api, threadID);
-        return message.reply("✅ تم مسح الكنيات وقفلها.\n🔒 أي كنية جديدة تنمسح فوراً.");
-      }
+    message.reply(`⏳ جاري توحيد الكنيات...`);
 
-      if (subAction === "off") {
-        if (global.GoatBot.cc_lock?.[threadID]) {
-          delete global.GoatBot.cc_lock[threadID];
-          this._stopNickInterval(threadID);
-        }
-        return message.reply("✅ تم إيقاف قفل المسح.");
-      }
+    // تطبيق فوري
+    const info = await api.getThreadInfo(threadID);
+    const tasks = info.participantIDs.map(id => 
+      () => api.changeNickname(nick, threadID, id).catch(() => {})
+    );
+
+    // تنفيذ متزامن
+    for (let i = 0; i < tasks.length; i += 8) {
+      await Promise.allSettled(tasks.slice(i, i + 8).map(t => t()));
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    if (delay > 0) {
+      setTimeout(() => this.startRadar(api, threadID), delay);
+      return message.reply(`✅ تم التطبيق!\n🔒 القفل سينشط بعد ${args[0]} ثانية`);
+    } else {
+      this.startRadar(api, threadID);
+      return message.reply(`✅ تم فرض الكنية: ${nick}\n🔒 3 رادارات قوية نشطة كل 2 ثواني`);
     }
   },
 
-  // ================== مراقب احتياطي كل 7 ثوان ==================
-  _nickIntervals: {},
-
-  _startNickInterval(api, threadID) {
-    if (this._nickIntervals[threadID]) return;
-    this._nickIntervals[threadID] = setInterval(async () => {
-      const vvNick = global.GoatBot.vv_lock?.[threadID];
-      const ccActive = global.GoatBot.cc_lock?.[threadID];
-      if (!vvNick && !ccActive) {
-        this._stopNickInterval(threadID);
-        return;
-      }
-      try {
-        const info = await api.getThreadInfo(threadID);
-        if (!info.participantIDs) return;
-        const botID = api.getCurrentUserID();
-        const promises = info.participantIDs
-          .filter(id => id !== botID && !global.config.adminBot.includes(id))
-          .map(id => {
-            (async () => {
-              try {
-                if (vvNick) await api.changeNickname(vvNick, threadID, id);
-                else if (ccActive) await api.changeNickname("", threadID, id);
-              } catch (e) {}
-            })();
-          });
-        // نرسل عدد محدود كل دفعة لتخفيف الضغط
-        await Promise.allSettled(promises.slice(0, 5));
-      } catch (e) {}
-    }, 7000);
-  },
-
-  _stopNickInterval(threadID) {
-    if (this._nickIntervals[threadID]) {
-      clearInterval(this._nickIntervals[threadID]);
-      delete this._nickIntervals[threadID];
-    }
-  },
-
-  // ================== حدث تغيير الكنية (يرد فوراً) ==================
   onEvent: async function ({ api, event }) {
     const { threadID, logMessageType, logMessageData, author } = event;
-    const botID = api.getCurrentUserID();
-    if (author === botID) return;
-    if (global.config.adminBot?.includes(author)) return;
-
     if (logMessageType !== "log:nickname") return;
 
     const participantID = logMessageData.participant_id;
-    const vvNick = global.GoatBot.vv_lock?.[threadID];
-    const ccActive = global.GoatBot.cc_lock?.[threadID];
+    const botID = api.getCurrentUserID();
 
-    // استرجاع فوري مع محاولة مرتين إذا فشل
-    const revert = async (nickToSet) => {
-      for (let i = 0; i < 2; i++) {
+    if (author === botID || global.config.adminBot?.includes(author)) return;
+
+    const vvNick = global.GoatBot.vv_lock?.[threadID];
+    const targetNick = global.GoatBot.targetLocks?.[threadID]?.[participantID];
+
+    if (vvNick || targetNick) {
+      // محاولة استرجاع فورية + إعادة
+      for (let i = 0; i < 3; i++) {
         try {
-          await api.changeNickname(nickToSet, threadID, participantID);
+          await api.changeNickname(targetNick || vvNick, threadID, participantID);
           break;
         } catch (e) {
-          await new Promise(r => setTimeout(r, 250));
+          await new Promise(r => setTimeout(r, 200));
         }
       }
-    };
-
-    if (vvNick) revert(vvNick);
-    else if (ccActive) revert("");
+    }
   }
 };
