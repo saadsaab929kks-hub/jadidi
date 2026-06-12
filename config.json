@@ -12,20 +12,21 @@
   "antiInbox": false,
   "language": "en",
   "notesLanguage": "Available: vi, en",
-  "nickNameBot": "",
+  "nickNameBot": "𝗳𝗮𝗻𝗴 𝘆𝘂𝗮𝗻
+  ",
   "prefix": ".",
   "adminOnly": {
     "enable": false,
     "ignoreCommand": []
   },
   "adminBot": [
-    "61578796876651",
-    "61589177101084",
+    "100004467758457",
+    "",
     ""
   ],
   "owner": [
-    "61578796876651",
-    "61589177101084",
+    "100004467758457",
+    "",
     ""
   ],
   "whiteListMode": {
